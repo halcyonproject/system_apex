@@ -95,11 +95,6 @@ using ::testing::UnorderedElementsAreArray;
 using ::testing::internal::CaptureStderr;
 using ::testing::internal::GetCapturedStderr;
 
-static std::string GetTestDataDir() { return GetExecutableDirectory(); }
-static std::string GetTestFile(const std::string& name) {
-  return GetTestDataDir() + "/" + name;
-}
-
 static int64_t GetMTime(const std::string& path) {
   struct stat st_buf;
   if (stat(path.c_str(), &st_buf) != 0) {
