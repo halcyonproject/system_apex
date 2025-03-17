@@ -4210,8 +4210,7 @@ TEST_F(ApexActivationFailureTests, ApexFileMissingInStagingDirectory) {
 
   apex_session = GetSessionManager()->GetSession(123);
   ASSERT_RESULT_OK(apex_session);
-  ASSERT_THAT(apex_session->GetErrorMessage(),
-              HasSubstr("No APEX packages found"));
+  ASSERT_THAT(apex_session->GetErrorMessage(), HasSubstr("Found: 0"));
 }
 
 TEST_F(ApexActivationFailureTests, MultipleApexFileInStagingDirectory) {
@@ -4228,8 +4227,7 @@ TEST_F(ApexActivationFailureTests, MultipleApexFileInStagingDirectory) {
 
   apex_session = GetSessionManager()->GetSession(123);
   ASSERT_RESULT_OK(apex_session);
-  ASSERT_THAT(apex_session->GetErrorMessage(),
-              HasSubstr("More than one APEX package found"));
+  ASSERT_THAT(apex_session->GetErrorMessage(), HasSubstr("Found: 2"));
 }
 
 TEST_F(ApexActivationFailureTests, CorruptedSuperblockApexCannotBeStaged) {
