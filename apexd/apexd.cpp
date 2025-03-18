@@ -2340,14 +2340,14 @@ void InitializeDataApex() {
  * Typically, only one APEX is activated for each package, but APEX that provide
  * shared libs are exceptions. We have to activate both APEX for them.
  *
- * @param all_apex all the APEX grouped by their package name
  * @return list of ApexFile that needs to be activated
  */
-std::vector<ApexFileRef> SelectApexForActivation(
-    const std::unordered_map<std::string, std::vector<ApexFileRef>>& all_apex,
-    const ApexFileRepository& instance) {
+std::vector<ApexFileRef> SelectApexForActivation() {
   LOG(INFO) << "Selecting APEX for activation";
   std::vector<ApexFileRef> activation_list;
+  const auto& instance = ApexFileRepository::GetInstance();
+  const auto& all_apex = instance.AllApexFilesByName();
+  activation_list.reserve(all_apex.size());
   // For every package X, select which APEX to activate
   for (auto& apex_it : all_apex) {
     const std::string& package_name = apex_it.first;
@@ -2665,11 +2665,7 @@ void OnStart() {
   }
 
   // Group every ApexFile on device by name
-  const auto& instance = ApexFileRepository::GetInstance();
-  const auto& all_apex = instance.AllApexFilesByName();
-  // There can be multiple APEX packages with package name X. Determine which
-  // one to activate.
-  auto activation_list = SelectApexForActivation(all_apex, instance);
+  auto activation_list = SelectApexForActivation();
 
   // Process compressed APEX, if any
   std::vector<ApexFileRef> compressed_apex;
@@ -3239,13 +3235,7 @@ int OnStartInVmMode() {
     return 1;
   }
 
-  if (auto status = ActivateApexPackages(instance.GetPreInstalledApexFiles(),
-                                         ActivationMode::kVmMode);
-      !status.ok()) {
-    LOG(ERROR) << "Failed to activate apex packages : " << status.error();
-    return 1;
-  }
-  if (auto status = ActivateApexPackages(instance.GetDataApexFiles(),
+  if (auto status = ActivateApexPackages(SelectApexForActivation(),
                                          ActivationMode::kVmMode);
       !status.ok()) {
     LOG(ERROR) << "Failed to activate apex packages : " << status.error();
@@ -3302,8 +3292,7 @@ int OnOtaChrootBootstrap(bool also_include_staged_apexes) {
     return 1;
   }
 
-  auto activation_list =
-      SelectApexForActivation(instance.AllApexFilesByName(), instance);
+  auto activation_list = SelectApexForActivation();
 
   // TODO(b/179497746): This is the third time we are duplicating this code
   // block. This will be easier to dedup once we start opening ApexFiles via

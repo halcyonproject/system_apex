@@ -350,14 +350,7 @@ TEST_F(ApexdUnitTest, SelectApexForActivationSuccess) {
       AddDataApex("com.android.apex.test.sharedlibs_generated.v1.libvX.apex"));
   ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
 
-  const auto all_apex = instance.AllApexFilesByName();
-  // Pass a blank instance so that no apex file is considered
-  // pre-installed
-  const ApexFileRepository instance_blank;
-  auto result = SelectApexForActivation(all_apex, instance_blank);
-  ASSERT_EQ(result.size(), 6u);
-  // When passed proper instance they should get selected
-  result = SelectApexForActivation(all_apex, instance);
+  auto result = SelectApexForActivation();
   ASSERT_EQ(result.size(), 3u);
   ASSERT_THAT(result, UnorderedElementsAre(ApexFileEq(ByRef(*apexd_test_file)),
                                            ApexFileEq(ByRef(*shim_v1)),
@@ -379,8 +372,7 @@ TEST_F(ApexdUnitTest, HigherVersionOfApexIsSelected) {
       ApexFile::Open(AddDataApex("com.android.apex.cts.shim.v2.apex"));
   ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
 
-  auto all_apex = instance.AllApexFilesByName();
-  auto result = SelectApexForActivation(all_apex, instance);
+  auto result = SelectApexForActivation();
   ASSERT_EQ(result.size(), 2u);
 
   ASSERT_THAT(result,
@@ -402,8 +394,7 @@ TEST_F(ApexdUnitTest, DataApexGetsPriorityForSameVersions) {
   // Initialize ApexFile repo
   ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
 
-  auto all_apex = instance.AllApexFilesByName();
-  auto result = SelectApexForActivation(all_apex, instance);
+  auto result = SelectApexForActivation();
   ASSERT_EQ(result.size(), 2u);
 
   ASSERT_THAT(result, UnorderedElementsAre(ApexFileEq(ByRef(*apexd_test_file)),
@@ -425,8 +416,7 @@ TEST_F(ApexdUnitTest, SharedLibsCanHaveBothVersionSelected) {
   // Initialize data APEX information
   ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
 
-  auto all_apex = instance.AllApexFilesByName();
-  auto result = SelectApexForActivation(all_apex, instance);
+  auto result = SelectApexForActivation();
   ASSERT_EQ(result.size(), 2u);
 
   ASSERT_THAT(result, UnorderedElementsAre(ApexFileEq(ByRef(*shared_lib_v1)),
@@ -448,8 +438,7 @@ TEST_F(ApexdUnitTest, SharedLibsDataVersionDeletedIfLower) {
   // Initialize data APEX information
   ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
 
-  auto all_apex = instance.AllApexFilesByName();
-  auto result = SelectApexForActivation(all_apex, instance);
+  auto result = SelectApexForActivation();
   ASSERT_EQ(result.size(), 1u);
 
   ASSERT_THAT(result, UnorderedElementsAre(ApexFileEq(ByRef(*shared_lib_v2))));
