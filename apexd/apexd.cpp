@@ -1339,21 +1339,7 @@ std::vector<ApexFile> CalculateInactivePackages(
 }
 
 Result<void> EmitApexInfoList(bool is_bootstrap) {
-  // Apexd runs both in "bootstrap" and "default" mount namespace.
-  // To expose /apex/apex-info-list.xml separately in each mount namespaces,
-  // we write /apex/.<namespace>-apex-info-list .xml file first and then
-  // bind mount it to the canonical file (/apex/apex-info-list.xml).
-  const std::string file_name =
-      fmt::format("{}/.{}-{}", kApexRoot,
-                  is_bootstrap ? "bootstrap" : "default", kApexInfoList);
-
-  unique_fd fd(TEMP_FAILURE_RETRY(
-      open(file_name.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)));
-  if (fd.get() == -1) {
-    return ErrnoErrorf("Can't open {}", file_name);
-  }
-
-  const std::vector<ApexFile> active(GetActivePackages());
+  std::vector<ApexFile> active{GetActivePackages()};
 
   std::vector<ApexFile> inactive;
   // we skip for non-activated built-in apexes in bootstrap mode
@@ -1365,23 +1351,17 @@ Result<void> EmitApexInfoList(bool is_bootstrap) {
   std::stringstream xml;
   CollectApexInfoList(xml, active, inactive);
 
+  unique_fd fd(TEMP_FAILURE_RETRY(
+      open(kApexInfoList, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)));
+  if (fd.get() == -1) {
+    return ErrnoErrorf("Can't open {}", kApexInfoList);
+  }
   if (!android::base::WriteStringToFd(xml.str(), fd)) {
-    return ErrnoErrorf("Can't write to {}", file_name);
+    return ErrnoErrorf("Can't write to {}", kApexInfoList);
   }
 
   fd.reset();
-
-  const std::string mount_point =
-      fmt::format("{}/{}", kApexRoot, kApexInfoList);
-  if (access(mount_point.c_str(), F_OK) != 0) {
-    close(open(mount_point.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
-               0644));
-  }
-  if (mount(file_name.c_str(), mount_point.c_str(), nullptr, MS_BIND,
-            nullptr) == -1) {
-    return ErrnoErrorf("Can't bind mount {} to {}", file_name, mount_point);
-  }
-  return RestoreconPath(file_name);
+  return RestoreconPath(kApexInfoList);
 }
 
 namespace {
@@ -3362,41 +3342,8 @@ int OnOtaChrootBootstrap(bool also_include_staged_apexes) {
     }
   }
 
-  // There are a bunch of places that are producing apex-info.xml file.
-  // We should consolidate the logic in one function and make all other places
-  // use it.
-  auto active_apexes = GetActivePackages();
-  std::vector<ApexFile> inactive_apexes = GetFactoryPackages();
-  auto new_end = std::remove_if(
-      inactive_apexes.begin(), inactive_apexes.end(),
-      [&active_apexes](const ApexFile& apex) {
-        return std::any_of(active_apexes.begin(), active_apexes.end(),
-                           [&apex](const ApexFile& active_apex) {
-                             return apex.GetPath() == active_apex.GetPath();
-                           });
-      });
-  inactive_apexes.erase(new_end, inactive_apexes.end());
-  std::stringstream xml;
-  CollectApexInfoList(xml, active_apexes, inactive_apexes);
-  std::string file_name = StringPrintf("%s/%s", kApexRoot, kApexInfoList);
-  unique_fd fd(TEMP_FAILURE_RETRY(
-      open(file_name.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)));
-  if (fd.get() == -1) {
-    PLOG(ERROR) << "Can't open " << file_name;
-    return 1;
-  }
-
-  if (!android::base::WriteStringToFd(xml.str(), fd)) {
-    PLOG(ERROR) << "Can't write to " << file_name;
-    return 1;
-  }
-
-  fd.reset();
-
-  if (auto status = RestoreconPath(file_name); !status.ok()) {
-    LOG(ERROR) << "Failed to restorecon " << file_name << " : "
-               << status.error();
-    return 1;
+  if (auto status = EmitApexInfoList(/*is_bootstrap*/ false); !status.ok()) {
+    LOG(ERROR) << status.error();
   }
 
   return 0;
@@ -3530,26 +3477,6 @@ Result<size_t> ComputePackageIdMinor(const ApexFile& apex) {
   }
 
   return next_minor;
-}
-
-Result<void> UpdateApexInfoList() {
-  std::vector<ApexFile> active(GetActivePackages());
-  std::vector<ApexFile> inactive = CalculateInactivePackages(active);
-
-  std::stringstream xml;
-  CollectApexInfoList(xml, active, inactive);
-
-  std::string name = StringPrintf("%s/.default-%s", kApexRoot, kApexInfoList);
-  unique_fd fd(TEMP_FAILURE_RETRY(
-      open(name.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644)));
-  if (fd.get() == -1) {
-    return ErrnoError() << "Can't open " << name;
-  }
-  if (!WriteStringToFd(xml.str(), fd)) {
-    return ErrnoError() << "Failed to write to " << name;
-  }
-
-  return {};
 }
 
 // TODO(b/238820991) Handle failures
@@ -3694,7 +3621,7 @@ Result<ApexFile> InstallPackage(const std::string& package_path, bool force)
     }
   }
 
-  if (auto res = UpdateApexInfoList(); !res.ok()) {
+  if (auto res = EmitApexInfoList(/*is_bootstrap*/ false); !res.ok()) {
     LOG(ERROR) << res.error();
   }
 

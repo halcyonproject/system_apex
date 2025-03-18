@@ -4012,9 +4012,7 @@ TEST_F(ApexdMountTest, OnStartInVmModeActivatesPreInstalled) {
               UnorderedElementsAre("/apex/com.android.apex.test_package",
                                    "/apex/com.android.apex.test_package@1",
                                    "/apex/com.android.apex.test_package_2",
-                                   "/apex/com.android.apex.test_package_2@1",
-                                   // Emits apex-info-list as well
-                                   "/apex/apex-info-list.xml"));
+                                   "/apex/com.android.apex.test_package_2@1"));
 
   ASSERT_EQ(GetProperty(kTestApexdStatusSysprop, ""), "ready");
 }
@@ -4044,9 +4042,7 @@ TEST_F(ApexdMountTest, OnStartInVmModeActivatesBlockDevicesAsWell) {
   auto apex_mounts = GetApexMounts();
   ASSERT_THAT(apex_mounts,
               UnorderedElementsAre("/apex/com.android.apex.test_package",
-                                   "/apex/com.android.apex.test_package@1",
-                                   // Emits apex-info-list as well
-                                   "/apex/apex-info-list.xml"));
+                                   "/apex/com.android.apex.test_package@1"));
 
   ASSERT_EQ(access("/apex/apex-info-list.xml", F_OK), 0);
   auto info_list =
@@ -4096,9 +4092,7 @@ TEST_F(ApexdMountTest, OnStartInVmSupportsMultipleSharedLibsApexes) {
   auto apex_mounts = GetApexMounts();
   ASSERT_THAT(apex_mounts,
               UnorderedElementsAre("/apex/com.android.apex.test.sharedlibs@1",
-                                   "/apex/com.android.apex.test.sharedlibs@2",
-                                   // Emits apex-info-list as well
-                                   "/apex/apex-info-list.xml"));
+                                   "/apex/com.android.apex.test.sharedlibs@2"));
 }
 
 TEST_F(ApexdMountTest, OnStartInVmShouldRejectInDuplicateFactoryApexes) {
