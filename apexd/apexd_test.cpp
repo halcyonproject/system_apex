@@ -5251,15 +5251,21 @@ TEST_F(SubmitStagedSessionTest, SuccessWithMultiSession) {
 }
 
 // Temporary test cases until the feature is fully enabled/implemented
-class MountBeforeDataTest : public SubmitStagedSessionTest {
+class MountBeforeDataTest : public ApexdMountTest {
  protected:
   void SetUp() override {
     config_.mount_before_data = true;
-    SubmitStagedSessionTest::SetUp();
+    ApexdMountTest::SetUp();
+
+    // preinstalled APEXes
+    AddPreInstalledApex("apex.apexd_test.apex");
+    AddPreInstalledApex("apex.apexd_test_different_app.apex");
   }
 };
 
 TEST_F(MountBeforeDataTest, StagingCreatesBackingImages) {
+  ASSERT_EQ(0, OnBootstrap());
+
   auto session_id = 42;
   PrepareStagedSession("apex.apexd_test.apex", session_id);
   ASSERT_THAT(SubmitStagedSession(session_id, {}, false, false, -1), Ok());
@@ -5270,12 +5276,24 @@ TEST_F(MountBeforeDataTest, StagingCreatesBackingImages) {
 }
 
 TEST_F(MountBeforeDataTest, AbortSessionRemovesBackingImages) {
+  ASSERT_EQ(0, OnBootstrap());
+
   auto session_id = 42;
   PrepareStagedSession("apex.apexd_test.apex", session_id);
   ASSERT_THAT(SubmitStagedSession(session_id, {}, false, false, -1), Ok());
   ASSERT_THAT(AbortStagedSession(session_id), Ok());
 
   ASSERT_THAT(image_manager_->GetAllImages(), IsEmpty());
+}
+
+TEST_F(MountBeforeDataTest, OnBootstrapActivatesAllApexes) {
+  ASSERT_EQ(0, OnBootstrap());
+
+  ASSERT_THAT(GetApexMounts(),
+              UnorderedElementsAre("/apex/com.android.apex.test_package_2"s,
+                                   "/apex/com.android.apex.test_package_2@1"s,
+                                   "/apex/com.android.apex.test_package"s,
+                                   "/apex/com.android.apex.test_package@1"s));
 }
 
 class LogTestToLogcat : public ::testing::EmptyTestEventListener {

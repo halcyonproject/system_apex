@@ -2196,42 +2196,9 @@ Result<void> CreateSharedLibsApexDir() {
   return {};
 }
 
-int OnBootstrap() {
-  ATRACE_NAME("OnBootstrap");
-  auto time_started = boot_clock::now();
-
-  ApexFileRepository& instance = ApexFileRepository::GetInstance();
-  Result<void> status =
-      instance.AddPreInstalledApexParallel(gConfig->builtin_dirs);
-  if (!status.ok()) {
-    LOG(ERROR) << "Failed to collect APEX keys : " << status.error();
-    return 1;
-  }
-
-  const auto& pre_installed_apexes = instance.GetPreInstalledApexFiles();
-  int loop_device_cnt = pre_installed_apexes.size();
-  // Find all bootstrap apexes
-  std::vector<ApexFileRef> bootstrap_apexes;
-  for (const auto& apex : pre_installed_apexes) {
-    if (IsBootstrapApex(apex.get())) {
-      LOG(INFO) << "Found bootstrap APEX " << apex.get().GetPath();
-      bootstrap_apexes.push_back(apex);
-      loop_device_cnt++;
-    }
-    if (apex.get().GetManifest().providesharedapexlibs()) {
-      LOG(INFO) << "Found sharedlibs APEX " << apex.get().GetPath();
-      // Sharedlis APEX might be mounted 2 times:
-      //   * Pre-installed sharedlibs APEX will be mounted in OnStart
-      //   * Updated sharedlibs APEX (if it exists) will be mounted in OnStart
-      //
-      // We already counted a loop device for one of these 2 mounts, need to add
-      // 1 more.
-      loop_device_cnt++;
-    }
-  }
-  LOG(INFO) << "Need to pre-allocate " << loop_device_cnt
-            << " loop devices for " << pre_installed_apexes.size()
-            << " APEX packages";
+void PrepareResources(size_t loop_device_cnt,
+                      const std::vector<std::string>& apex_names) {
+  LOG(INFO) << "Need to pre-allocate " << loop_device_cnt << " loop devices";
   if (auto res = loop::PreAllocateLoopDevices(loop_device_cnt); !res.ok()) {
     LOG(ERROR) << "Failed to pre-allocate loop devices : " << res.error();
   }
@@ -2245,18 +2212,60 @@ int OnBootstrap() {
   // optimistically creating a verity device for all of them. Once boot
   // finishes, apexd will clean up unused devices.
   // TODO(b/192241176): move to apexd_verity.{h,cpp}
-  for (const auto& apex : pre_installed_apexes) {
-    const std::string& name = apex.get().GetManifest().name();
+  for (const auto& name : apex_names) {
     if (!dm.CreatePlaceholderDevice(name)) {
       LOG(ERROR) << "Failed to create empty device " << name;
     }
   }
+}
 
-  // Now activate bootstrap apexes.
+int OnBootstrap() {
+  ATRACE_NAME("OnBootstrap");
+  auto time_started = boot_clock::now();
+
+  ApexFileRepository& instance = ApexFileRepository::GetInstance();
+  Result<void> status =
+      instance.AddPreInstalledApexParallel(gConfig->builtin_dirs);
+  if (!status.ok()) {
+    LOG(ERROR) << "Failed to collect APEX keys : " << status.error();
+    return 1;
+  }
+
+  std::vector<ApexFileRef> activation_list;
+
+  if (IsMountBeforeDataEnabled()) {
+    activation_list = SelectApexForActivation();
+  } else {
+    const auto& pre_installed_apexes = instance.GetPreInstalledApexFiles();
+    size_t loop_device_cnt = pre_installed_apexes.size();
+    std::vector<std::string> apex_names;
+    apex_names.reserve(loop_device_cnt);
+    // Find all bootstrap apexes
+    for (const auto& apex : pre_installed_apexes) {
+      apex_names.push_back(apex.get().GetManifest().name());
+      if (IsBootstrapApex(apex.get())) {
+        LOG(INFO) << "Found bootstrap APEX " << apex.get().GetPath();
+        activation_list.push_back(apex);
+        loop_device_cnt++;
+      }
+      if (apex.get().GetManifest().providesharedapexlibs()) {
+        LOG(INFO) << "Found sharedlibs APEX " << apex.get().GetPath();
+        // Sharedlis APEX might be mounted 2 times:
+        //   * Pre-installed sharedlibs APEX will be mounted in OnStart
+        //   * Updated sharedlibs APEX (if it exists) will be mounted in OnStart
+        //
+        // We already counted a loop device for one of these 2 mounts, need to
+        // add 1 more.
+        loop_device_cnt++;
+      }
+    }
+    PrepareResources(loop_device_cnt, apex_names);
+  }
+
   auto ret =
-      ActivateApexPackages(bootstrap_apexes, ActivationMode::kBootstrapMode);
+      ActivateApexPackages(activation_list, ActivationMode::kBootstrapMode);
   if (!ret.ok()) {
-    LOG(ERROR) << "Failed to activate bootstrap apex files : " << ret.error();
+    LOG(ERROR) << "Failed to activate apexes: " << ret.error();
     return 1;
   }
 
