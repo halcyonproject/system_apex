@@ -119,8 +119,11 @@ namespace android {
 namespace apex {
 
 using MountedApexData = MountedApexDatabase::MountedApexData;
-Result<std::vector<ApexFile>> OpenSessionApexFiles(
+Result<std::vector<ApexFile>> OpenApexFilesInSessionDirs(
     int session_id, const std::vector<int>& child_session_ids);
+
+Result<std::vector<std::string>> StagePackagesImpl(
+    const std::vector<std::string>& tmp_paths);
 
 namespace {
 
@@ -276,8 +279,8 @@ std::unique_ptr<DmTable> CreateVerityTable(const ApexVerityData& verity_data,
  * kActiveApexPackagesDataDir
  */
 Result<void> RemovePreviouslyActiveApexFiles(
-    const std::unordered_set<std::string>& affected_packages,
-    const std::unordered_set<std::string>& files_to_keep) {
+    const std::vector<std::string>& affected_packages,
+    const std::vector<std::string>& files_to_keep) {
   auto all_active_apex_files =
       FindFilesBySuffix(gConfig->active_apex_data_dir, {kApexPackageSuffix});
 
@@ -286,20 +289,19 @@ Result<void> RemovePreviouslyActiveApexFiles(
   }
 
   for (const std::string& path : *all_active_apex_files) {
+    if (std::ranges::contains(files_to_keep, path)) {
+      // This is a path that was staged and should be kept.
+      continue;
+    }
+
     Result<ApexFile> apex_file = ApexFile::Open(path);
     if (!apex_file.ok()) {
       return apex_file.error();
     }
-
     const std::string& package_name = apex_file->GetManifest().name();
-    if (affected_packages.find(package_name) == affected_packages.end()) {
+    if (!std::ranges::contains(affected_packages, package_name)) {
       // This apex belongs to a package that wasn't part of this stage sessions,
       // hence it should be kept.
-      continue;
-    }
-
-    if (files_to_keep.find(apex_file->GetPath()) != files_to_keep.end()) {
-      // This is a path that was staged and should be kept.
       continue;
     }
 
@@ -754,7 +756,7 @@ Result<VerificationResult> VerifyPackagesStagedInstall(
     }
     auto session_id = session.GetId();
     auto child_session_ids = session.GetChildSessionIds();
-    auto staged_apex_files = OpenSessionApexFiles(
+    auto staged_apex_files = OpenApexFilesInSessionDirs(
         session_id, {child_session_ids.begin(), child_session_ids.end()});
     if (staged_apex_files.ok()) {
       std::ranges::move(*staged_apex_files, std::back_inserter(all_apex_files));
@@ -1242,7 +1244,7 @@ Result<void> DeactivatePackage(const std::string& full_path) {
                         /* deferred= */ false, /* detach_mount_point= */ false);
 }
 
-Result<std::vector<ApexFile>> OpenSessionApexFiles(
+Result<std::vector<std::string>> ScanApexFilesInSessionDirs(
     int session_id, const std::vector<int>& child_session_ids) {
   std::vector<int> ids_to_scan;
   if (!child_session_ids.empty()) {
@@ -1268,7 +1270,20 @@ Result<std::vector<ApexFile>> OpenSessionApexFiles(
     std::string& apex_file_path = (*scan)[0];
     apex_file_paths.push_back(std::move(apex_file_path));
   }
+  return apex_file_paths;
+}
 
+Result<std::vector<std::string>> ScanSessionApexFiles(
+    const ApexSession& session) {
+  auto child_session_ids =
+      std::vector{std::from_range, session.GetChildSessionIds()};
+  return ScanApexFilesInSessionDirs(session.GetId(), child_session_ids);
+}
+
+Result<std::vector<ApexFile>> OpenApexFilesInSessionDirs(
+    int session_id, const std::vector<int>& child_session_ids) {
+  auto apex_file_paths =
+      OR_RETURN(ScanApexFilesInSessionDirs(session_id, child_session_ids));
   return OpenApexFiles(apex_file_paths);
 }
 
@@ -1280,7 +1295,7 @@ Result<std::vector<ApexFile>> GetStagedApexFiles(
     return Error() << "Session " << session_id << " is not in state STAGED";
   }
 
-  return OpenSessionApexFiles(session_id, child_session_ids);
+  return OpenApexFilesInSessionDirs(session_id, child_session_ids);
 }
 
 Result<ClassPath> MountAndDeriveClassPath(
@@ -1933,64 +1948,18 @@ void ActivateStagedSessions() {
       continue;
     }
 
-    std::vector<std::string> dirs_to_scan =
-        session.GetStagedApexDirs(gConfig->staged_session_dir);
-
-    std::vector<std::string> apexes;
-    bool scan_successful = true;
-    for (const auto& dir_to_scan : dirs_to_scan) {
-      Result<std::vector<std::string>> scan =
-          FindFilesBySuffix(dir_to_scan, {kApexPackageSuffix});
-      if (!scan.ok()) {
-        LOG(WARNING) << scan.error();
-        session.SetErrorMessage(scan.error().message());
-        scan_successful = false;
-        break;
-      }
-
-      if (scan->size() > 1) {
-        std::string error_message = StringPrintf(
-            "More than one APEX package found in the same session directory %s "
-            ", skipping activation",
-            dir_to_scan.c_str());
-        LOG(WARNING) << error_message;
-        session.SetErrorMessage(error_message);
-        scan_successful = false;
-        break;
-      }
-
-      if (scan->empty()) {
-        std::string error_message = StringPrintf(
-            "No APEX packages found while scanning %s session id: %d.",
-            dir_to_scan.c_str(), session_id);
-        LOG(WARNING) << error_message;
-        session.SetErrorMessage(error_message);
-        scan_successful = false;
-        break;
-      }
-      apexes.push_back(std::move((*scan)[0]));
-    }
-
-    if (!scan_successful) {
+    auto apexes = ScanSessionApexFiles(session);
+    if (!apexes.ok()) {
+      LOG(WARNING) << apexes.error();
+      session.SetErrorMessage(apexes.error().message());
       continue;
     }
 
-    std::vector<std::string> staged_apex_names;
-    for (const auto& apex : apexes) {
-      // TODO(b/158470836): Avoid opening ApexFile repeatedly.
-      Result<ApexFile> apex_file = ApexFile::Open(apex);
-      if (!apex_file.ok()) {
-        LOG(ERROR) << "Cannot open apex file during staging: " << apex;
-        continue;
-      }
-      staged_apex_names.push_back(apex_file->GetManifest().name());
-    }
-
-    const Result<void> result = StagePackages(apexes);
-    if (!result.ok()) {
-      std::string error_message = StringPrintf(
-          "Activation failed for packages %s : %s", Join(apexes, ',').c_str(),
-          result.error().message().c_str());
+    auto packages = StagePackagesImpl(*apexes);
+    if (!packages.ok()) {
+      std::string error_message =
+          std::format("Activation failed for packages {} : {}", *apexes,
+                      packages.error().message());
       LOG(ERROR) << error_message;
       session.SetErrorMessage(error_message);
       continue;
@@ -1999,9 +1968,7 @@ void ActivateStagedSessions() {
     // Session was OK, release scopeguard.
     scope_guard.Disable();
 
-    for (const std::string& apex : staged_apex_names) {
-      gChangedActiveApexes.insert(apex);
-    }
+    gChangedActiveApexes.insert_range(*packages);
 
     auto st = session.UpdateStateAndCommit(SessionState::ACTIVATED);
     if (!st.ok()) {
@@ -2020,9 +1987,10 @@ std::string StageDestPath(const ApexFile& apex_file) {
 
 }  // namespace
 
-Result<void> StagePackagesImpl(const std::vector<std::string>& tmp_paths) {
+Result<std::vector<std::string>> StagePackagesImpl(
+    const std::vector<std::string>& tmp_paths) {
   if (tmp_paths.empty()) {
-    return Errorf("Empty set of inputs");
+    return Error() << "Empty set of inputs";
   }
   LOG(DEBUG) << "StagePackagesImpl() for " << Join(tmp_paths, ',');
 
@@ -2055,7 +2023,7 @@ Result<void> StagePackagesImpl(const std::vector<std::string>& tmp_paths) {
   // 2) Now stage all of them.
 
   // Ensure the APEX gets removed on failure.
-  std::unordered_set<std::string> staged_files;
+  std::vector<std::string> staged_files;
   auto deleter = [&staged_files]() {
     for (const std::string& staged_path : staged_files) {
       if (TEMP_FAILURE_RETRY(unlink(staged_path.c_str())) != 0) {
@@ -2065,7 +2033,7 @@ Result<void> StagePackagesImpl(const std::vector<std::string>& tmp_paths) {
   };
   auto scope_guard = android::base::make_scope_guard(deleter);
 
-  std::unordered_set<std::string> staged_packages;
+  std::vector<std::string> staged_packages;
   for (const ApexFile& apex_file : *apex_files) {
     // move apex to /data/apex/active.
     std::string dest_path = StageDestPath(apex_file);
@@ -2080,8 +2048,8 @@ Result<void> StagePackagesImpl(const std::vector<std::string>& tmp_paths) {
       return ErrnoError() << "Unable to link " << apex_file.GetPath() << " to "
                           << dest_path;
     }
-    staged_files.insert(dest_path);
-    staged_packages.insert(apex_file.GetManifest().name());
+    staged_files.push_back(dest_path);
+    staged_packages.push_back(apex_file.GetManifest().name());
 
     LOG(DEBUG) << "Success linking " << apex_file.GetPath() << " to "
                << dest_path;
@@ -2089,15 +2057,14 @@ Result<void> StagePackagesImpl(const std::vector<std::string>& tmp_paths) {
 
   scope_guard.Disable();  // Accept the state.
 
-  return RemovePreviouslyActiveApexFiles(staged_packages, staged_files);
+  OR_RETURN(RemovePreviouslyActiveApexFiles(staged_packages, staged_files));
+
+  return staged_packages;
 }
 
 Result<void> StagePackages(const std::vector<std::string>& tmp_paths) {
-  Result<void> ret = StagePackagesImpl(tmp_paths);
-  if (!ret.ok()) {
-    ;  // TODO(b/366068337, Queue atoms)
-  }
-  return ret;
+  OR_RETURN(StagePackagesImpl(tmp_paths));
+  return {};
 }
 
 Result<void> UnstagePackages(const std::vector<std::string>& paths) {
@@ -2841,7 +2808,8 @@ Result<std::vector<ApexFile>> SubmitStagedSession(
     }
   }
 
-  auto ret = OR_RETURN(OpenSessionApexFiles(session_id, child_session_ids));
+  auto ret =
+      OR_RETURN(OpenApexFilesInSessionDirs(session_id, child_session_ids));
   event.AddFiles(ret);
 
   auto result = OR_RETURN(VerifyPackagesStagedInstall(ret));
