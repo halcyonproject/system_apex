@@ -661,26 +661,13 @@ std::optional<int64_t> ApexFileRepository::GetBrandNewApexBlockedVersion(
 // Group pre-installed APEX and data APEX by name
 std::unordered_map<std::string, std::vector<ApexFileRef>>
 ApexFileRepository::AllApexFilesByName() const {
-  // Collect all apex files
-  std::vector<ApexFileRef> all_apex_files;
-  auto pre_installed_apexs = GetPreInstalledApexFiles();
-  auto data_apexs = GetDataApexFiles();
-  std::move(pre_installed_apexs.begin(), pre_installed_apexs.end(),
-            std::back_inserter(all_apex_files));
-  std::move(data_apexs.begin(), data_apexs.end(),
-            std::back_inserter(all_apex_files));
-
   // Group them by name
   std::unordered_map<std::string, std::vector<ApexFileRef>> result;
-  for (const auto& apex_file_ref : all_apex_files) {
-    const ApexFile& apex_file = apex_file_ref.get();
-    const std::string& package_name = apex_file.GetManifest().name();
-    if (result.find(package_name) == result.end()) {
-      result[package_name] = std::vector<ApexFileRef>{};
+  for (const auto* store : {&pre_installed_store_, &data_store_}) {
+    for (const auto& [name, apex] : *store) {
+      result[name].emplace_back(std::cref(apex));
     }
-    result[package_name].emplace_back(apex_file_ref);
   }
-
   return result;
 }
 
