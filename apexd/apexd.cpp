@@ -2278,24 +2278,29 @@ int OnBootstrap() {
 }
 
 void InitializeVold(CheckpointInterface* checkpoint_service) {
-  if (checkpoint_service != nullptr) {
-    gVoldService = checkpoint_service;
-    Result<bool> supports_fs_checkpoints =
-        gVoldService->SupportsFsCheckpoints();
-    if (supports_fs_checkpoints.ok()) {
-      gSupportsFsCheckpoints = *supports_fs_checkpoints;
+  if (checkpoint_service == nullptr) {
+    // For tests to reset global states because tests that change global states
+    // may affect other tests.
+    gVoldService = nullptr;
+    gSupportsFsCheckpoints = false;
+    gInFsCheckpointMode = false;
+    return;
+  }
+  gVoldService = checkpoint_service;
+  Result<bool> supports_fs_checkpoints = gVoldService->SupportsFsCheckpoints();
+  if (supports_fs_checkpoints.ok()) {
+    gSupportsFsCheckpoints = *supports_fs_checkpoints;
+  } else {
+    LOG(ERROR) << "Failed to check if filesystem checkpoints are supported: "
+               << supports_fs_checkpoints.error();
+  }
+  if (gSupportsFsCheckpoints) {
+    Result<bool> needs_checkpoint = gVoldService->NeedsCheckpoint();
+    if (needs_checkpoint.ok()) {
+      gInFsCheckpointMode = *needs_checkpoint;
     } else {
-      LOG(ERROR) << "Failed to check if filesystem checkpoints are supported: "
-                 << supports_fs_checkpoints.error();
-    }
-    if (gSupportsFsCheckpoints) {
-      Result<bool> needs_checkpoint = gVoldService->NeedsCheckpoint();
-      if (needs_checkpoint.ok()) {
-        gInFsCheckpointMode = *needs_checkpoint;
-      } else {
-        LOG(ERROR) << "Failed to check if we're in filesystem checkpoint mode: "
-                   << needs_checkpoint.error();
-      }
+      LOG(ERROR) << "Failed to check if we're in filesystem checkpoint mode: "
+                 << needs_checkpoint.error();
     }
   }
 }
