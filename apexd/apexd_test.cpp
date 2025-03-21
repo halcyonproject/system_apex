@@ -4217,6 +4217,12 @@ TEST_F(ApexdMountTest, OnBootstrapLoadBootstrapApexOnly) {
   AddPreInstalledApex("apex.apexd_test.apex");
   AddPreInstalledApex("apex.apexd_bootstrap_test.apex");
 
+  DeviceMapper& dm = DeviceMapper::Instance();
+  auto cleaner = make_scope_guard([&]() {
+    dm.DeleteDeviceIfExists("com.android.apex.test_package", 1s);
+    dm.DeleteDeviceIfExists("com.android.apex.bootstrap_test_package", 1s);
+  });
+
   ASSERT_EQ(0, OnBootstrap());
 
   // Check bootstrap apex was loaded
