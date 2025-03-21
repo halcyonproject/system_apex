@@ -250,20 +250,23 @@ class ApexdUnitTest : public ::testing::Test {
   }
 
   // Copies the compressed apex to |built_in_dir| and decompresses it to
-  // |decompressed_dir| and then hard links to |target_dir|
-  std::string PrepareCompressedApex(const std::string& name,
-                                    const std::string& built_in_dir) {
+  // |decompressed_dir| and returns both paths as tuple.
+  std::tuple<std::string, std::string> PrepareCompressedApex(
+      const std::string& name, const std::string& built_in_dir) {
     fs::copy(GetTestFile(name), built_in_dir);
-    auto compressed_apex = ApexFile::Open(
-        StringPrintf("%s/%s", built_in_dir.c_str(), name.c_str()));
+    auto compressed_file_path =
+        StringPrintf("%s/%s", built_in_dir.c_str(), name.c_str());
+    auto compressed_apex = ApexFile::Open(compressed_file_path);
     std::vector<ApexFileRef> compressed_apex_list;
     compressed_apex_list.emplace_back(std::cref(*compressed_apex));
-    auto return_value =
+    auto decompressed =
         ProcessCompressedApex(compressed_apex_list, /*is_ota_chroot*/ false);
-    return StringPrintf("%s/%s", built_in_dir.c_str(), name.c_str());
+    CHECK(decompressed.size() == 1);
+    return std::make_tuple(compressed_file_path, decompressed[0].GetPath());
   }
 
-  std::string PrepareCompressedApex(const std::string& name) {
+  std::tuple<std::string, std::string> PrepareCompressedApex(
+      const std::string& name) {
     return PrepareCompressedApex(name, built_in_dir_);
   }
 
@@ -616,138 +619,123 @@ TEST_F(ApexdUnitTest, ProcessCompressedApexReuseOtaApex) {
                          kDecompressedApexPackageSuffix));
 }
 
-TEST_F(ApexdUnitTest, ShouldAllocateSpaceForDecompressionNewApex) {
-  auto& instance = ApexFileRepository::GetInstance();
-  ASSERT_THAT(instance.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
-              Ok());
+TEST_F(ApexdUnitTest, ShouldAllocateSpaceForDecompression_NewApex) {
+  ApexFileRepository instance;
+  MountedApexDatabase db;
 
   // A brand new compressed APEX is being introduced: selected
-  bool result =
-      ShouldAllocateSpaceForDecompression("com.android.brand.new", 1, instance);
+  bool result = ShouldAllocateSpaceForDecompression("com.android.brand.new", 1,
+                                                    instance, db);
   ASSERT_TRUE(result);
 }
 
 TEST_F(ApexdUnitTest,
-       ShouldAllocateSpaceForDecompressionWasNotCompressedBefore) {
-  // Prepare fake pre-installed apex
-  AddPreInstalledApex("apex.apexd_test.apex");
-  auto& instance = ApexFileRepository::GetInstance();
+       ShouldAllocateSpaceForDecompression_WasNotCompressedBefore) {
+  ApexFileRepository instance;
+  auto preinstalled_path = AddPreInstalledApex("apex.apexd_test.apex");
   ASSERT_THAT(instance.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
               Ok());
 
   // An existing pre-installed APEX is now compressed in the OTA: selected
   {
+    MountedApexDatabase db;
+    db.AddMountedApex("com.android.apex.test_package", 1, "", preinstalled_path,
+                      "mount_point", "device_name");
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.test_package", 1, instance);
+        "com.android.apex.test_package", 1, instance, db);
     ASSERT_TRUE(result);
   }
 
   // Even if there is a data apex (lower version)
   // Include data apex within calculation now
-  AddDataApex("apex.apexd_test_v2.apex");
+  auto data_path = AddDataApex("apex.apexd_test_v2.apex");
   ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
   {
+    MountedApexDatabase db;
+    db.AddMountedApex("com.android.apex.test_package", 2, "", data_path,
+                      "mount_point", "device_name");
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.test_package", 3, instance);
+        "com.android.apex.test_package", 3, instance, db);
     ASSERT_TRUE(result);
   }
 
   // But not if data apex has equal or higher version
   {
+    MountedApexDatabase db;
+    db.AddMountedApex("com.android.apex.test_package", 2, "", data_path,
+                      "mount_point", "device_name");
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.test_package", 2, instance);
+        "com.android.apex.test_package", 2, instance, db);
     ASSERT_FALSE(result);
   }
 }
 
-TEST_F(ApexdUnitTest, ShouldAllocateSpaceForDecompressionVersionCompare) {
+TEST_F(ApexdUnitTest, ShouldAllocateSpaceForDecompression_VersionCompare) {
   // Prepare fake pre-installed apex
-  PrepareCompressedApex("com.android.apex.compressed.v1.capex");
-  auto& instance = ApexFileRepository::GetInstance();
+  ApexFileRepository instance(decompression_dir_);
+  auto [_, decompressed_path] =
+      PrepareCompressedApex("com.android.apex.compressed.v1.capex");
   ASSERT_THAT(instance.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
               Ok());
-  ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
+  // Fake mount
+  MountedApexDatabase db;
+  db.AddMountedApex("com.android.apex.compressed", 1, "", decompressed_path,
+                    "mount_point", "device_name");
 
   {
     // New Compressed apex has higher version than decompressed data apex:
     // selected
+
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.compressed", 2, instance);
+        "com.android.apex.compressed", 2, instance, db);
     ASSERT_TRUE(result)
         << "Higher version test with decompressed data returned false";
   }
 
   // Compare against decompressed data apex
   {
-    // New Compressed apex has same version as decompressed data apex: not
-    // selected
+    // New Compressed apex has same version as decompressed data apex: selected
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.compressed", 1, instance);
-    ASSERT_FALSE(result)
-        << "Same version test with decompressed data returned true";
+        "com.android.apex.compressed", 1, instance, db);
+    ASSERT_TRUE(result) << "Even with same version, the incoming apex may have "
+                           "a different size. Need to decompress";
   }
 
   {
     // New Compressed apex has lower version than decompressed data apex:
     // selected
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.compressed", 0, instance);
+        "com.android.apex.compressed", 0, instance, db);
     ASSERT_TRUE(result)
         << "lower version test with decompressed data returned false";
   }
 
   // Replace decompressed data apex with a higher version
-  ApexFileRepository instance_new(GetDecompressionDir());
-  ASSERT_THAT(
-      instance_new.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
-      Ok());
-  TemporaryDir data_dir_new;
-  fs::copy(GetTestFile("com.android.apex.compressed.v2_original.apex"),
-           data_dir_new.path);
-  ASSERT_THAT(instance_new.AddDataApex(data_dir_new.path), Ok());
-
+  auto data_path = AddDataApex("com.android.apex.compressed.v2_original.apex");
+  ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
+  db.Reset();
+  db.AddMountedApex("com.android.apex.compressed", 2, "", data_path,
+                    "mount_point", "device_name");
   {
     // New Compressed apex has higher version as data apex: selected
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.compressed", 3, instance_new);
+        "com.android.apex.compressed", 3, instance, db);
     ASSERT_TRUE(result) << "Higher version test with new data returned false";
   }
 
   {
     // New Compressed apex has same version as data apex: not selected
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.compressed", 2, instance_new);
+        "com.android.apex.compressed", 2, instance, db);
     ASSERT_FALSE(result) << "Same version test with new data returned true";
   }
 
   {
     // New Compressed apex has lower version than data apex: not selected
     bool result = ShouldAllocateSpaceForDecompression(
-        "com.android.apex.compressed", 1, instance_new);
+        "com.android.apex.compressed", 1, instance, db);
     ASSERT_FALSE(result) << "lower version test with new data returned true";
   }
-}
-
-TEST_F(ApexdUnitTest, CalculateSizeForCompressedApexEmptyList) {
-  ApexFileRepository instance;
-  int64_t result = CalculateSizeForCompressedApex({}, instance);
-  ASSERT_EQ(0LL, result);
-}
-
-TEST_F(ApexdUnitTest, CalculateSizeForCompressedApex) {
-  ApexFileRepository instance;
-  AddPreInstalledApex("com.android.apex.compressed.v1.capex");
-  ASSERT_THAT(instance.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
-              Ok());
-
-  std::vector<std::tuple<std::string, int64_t, int64_t>> input = {
-      std::make_tuple("new_apex", 1, 1),
-      std::make_tuple("new_apex_2", 1, 2),
-      std::make_tuple("com.android.apex.compressed", 1, 4),  // will be ignored
-      std::make_tuple("com.android.apex.compressed", 2, 8),
-  };
-  int64_t result = CalculateSizeForCompressedApex(input, instance);
-  ASSERT_EQ(1 + 2 + 8LL, result);
 }
 
 TEST_F(ApexdUnitTest, ReserveSpaceForCompressedApexCreatesSingleFile) {
@@ -1009,6 +997,48 @@ class ApexdMountTest : public ApexdUnitTest {
   // in test-purpose mount namespace.
   std::vector<BlockApex> block_apexes_;
 };
+
+TEST_F(ApexdMountTest, CalculateSizeForCompressedApexEmptyList) {
+  int64_t result = CalculateSizeForCompressedApex({});
+  ASSERT_EQ(0LL, result);
+}
+
+TEST_F(ApexdMountTest, CalculateSizeForCompressedApex) {
+  auto& instance = ApexFileRepository::GetInstance();
+  AddPreInstalledApex("com.android.apex.compressed.v1.capex");
+  ASSERT_THAT(instance.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
+              Ok());
+
+  OnStart();
+
+  std::vector<std::tuple<std::string, int64_t, int64_t>> input = {
+      std::make_tuple("new_apex", 1, 1),
+      std::make_tuple("new_apex_2", 1, 2),
+      std::make_tuple("com.android.apex.compressed", 1, 8),
+  };
+  int64_t result = CalculateSizeForCompressedApex(input);
+  ASSERT_EQ(1 + 2 + 8LL, result);
+}
+
+TEST_F(
+    ApexdMountTest,
+    CalculateSizeForCompressedApex_SkipIfDataApexIsNewerThanOrEqualToPreInstalledApex) {
+  auto& instance = ApexFileRepository::GetInstance();
+  AddPreInstalledApex("com.android.apex.compressed.v1.capex");
+  AddDataApex("com.android.apex.compressed.v2_original.apex");
+  ASSERT_THAT(instance.AddPreInstalledApex({{GetPartition(), GetBuiltInDir()}}),
+              Ok());
+  ASSERT_THAT(instance.AddDataApex(GetDataDir()), Ok());
+
+  OnStart();
+
+  std::vector<std::tuple<std::string, int64_t, int64_t>> input = {
+      std::make_tuple("new_apex", 1, 1),
+      std::make_tuple("com.android.apex.compressed", 2, 8),  // ignored
+  };
+  int64_t result = CalculateSizeForCompressedApex(input);
+  ASSERT_EQ(1LL, result);
+}
 
 // TODO(b/187864524): cover other negative scenarios.
 TEST_F(ApexdMountTest, InstallPackageRejectsApexWithoutRebootlessSupport) {
@@ -2461,7 +2491,7 @@ TEST_F(ApexdMountTest, OnOtaChrootBootstrapSamegradeCapex) {
 // Test when we update existing CAPEX to same version, but different digest
 TEST_F(ApexdMountTest, OnOtaChrootBootstrapSamegradeCapexDifferentDigest) {
   TemporaryDir previous_built_in_dir;
-  auto different_digest_apex_path = PrepareCompressedApex(
+  auto [different_digest_apex_path, _] = PrepareCompressedApex(
       "com.android.apex.compressed.v1_different_digest.capex",
       previous_built_in_dir.path);
   // Place a same version capex in current built_in_dir, which has different
@@ -2649,7 +2679,7 @@ TEST_F(ApexdMountTest,
 
 // Test when we update CAPEX and there is a higher version present in data
 TEST_F(ApexdMountTest, OnOtaChrootBootstrapDataHigherThanCapex) {
-  auto system_apex_path =
+  auto [system_apex_path, _] =
       PrepareCompressedApex("com.android.apex.compressed.v1.capex");
   auto data_apex_path =
       AddDataApex("com.android.apex.compressed.v2_original.apex");
@@ -2744,7 +2774,7 @@ TEST_F(ApexdMountTest, OnOtaChrootBootstrapDataLowerThanCapex) {
 
 // Test when we update CAPEX and there is a same version present in data
 TEST_F(ApexdMountTest, OnOtaChrootBootstrapDataSameAsCapex) {
-  auto system_apex_path =
+  auto [system_apex_path, _] =
       PrepareCompressedApex("com.android.apex.compressed.v1.capex");
   auto data_apex_path = AddDataApex("com.android.apex.compressed.v1.apex");
 
@@ -3629,7 +3659,7 @@ TEST_F(ApexdMountTest,
 // Test when decompressed APEX has different key than CAPEX
 TEST_F(ApexdMountTest, OnStartDecompressedApexVersionSameAsCapexDifferentKey) {
   TemporaryDir previous_built_in_dir;
-  auto different_key_apex_path =
+  auto [different_key_apex_path, _] =
       PrepareCompressedApex("com.android.apex.compressed_different_key.capex",
                             previous_built_in_dir.path);
   // Place a same version capex in current built_in_dir, which has different key

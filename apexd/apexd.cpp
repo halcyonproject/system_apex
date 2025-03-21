@@ -3025,7 +3025,8 @@ int UnmountAll(bool also_include_staged_apexes) {
 // Given a single new APEX incoming via OTA, should we allocate space for it?
 bool ShouldAllocateSpaceForDecompression(const std::string& new_apex_name,
                                          const int64_t new_apex_version,
-                                         const ApexFileRepository& instance) {
+                                         const ApexFileRepository& instance,
+                                         const MountedApexDatabase& db) {
   // An apex at most will have two versions on device: pre-installed and data.
 
   // Check if there is a pre-installed version for the new apex.
@@ -3035,47 +3036,43 @@ bool ShouldAllocateSpaceForDecompression(const std::string& new_apex_name,
   }
 
   // Check if there is a data apex
-  if (!instance.HasDataVersion(new_apex_name)) {
-    // Data apex doesn't exist. Compare against pre-installed APEX
-    auto pre_installed_apex = instance.GetPreInstalledApex(new_apex_name);
-    if (!pre_installed_apex.get().IsCompressed()) {
-      // Compressing an existing uncompressed system APEX.
-      return true;
-    }
-    // Since there is no data apex, it means device is using the compressed
-    // pre-installed version. If new apex has higher version, we are upgrading
-    // the pre-install version and if new apex has lower version, we are
-    // downgrading it. So the current decompressed apex should be replaced
-    // with the new decompressed apex to reflect that.
-    const int64_t pre_installed_version =
-        instance.GetPreInstalledApex(new_apex_name)
-            .get()
-            .GetManifest()
-            .version();
-    return new_apex_version != pre_installed_version;
+  // If the current active apex is preinstalled, then it means no data apex.
+  auto current_active = db.GetLatestMountedApex(new_apex_name);
+  if (!current_active) {
+    LOG(ERROR) << "Failed to get mount data for : " << new_apex_name
+               << " is preinstalled, but not activated.";
+    return true;
+  }
+  auto current_active_apex_file = ApexFile::Open(current_active->full_path);
+  if (!current_active_apex_file.ok()) {
+    LOG(ERROR) << "Failed to open " << current_active->full_path << " : "
+               << current_active_apex_file.error();
+    return true;
+  }
+  if (instance.IsPreInstalledApex(*current_active_apex_file)) {
+    return true;
   }
 
   // From here on, data apex exists. So we should compare directly against data
   // apex.
-  auto data_apex = instance.GetDataApex(new_apex_name);
-  // Compare the data apex version with new apex
-  const int64_t data_version = data_apex.get().GetManifest().version();
+  const int64_t data_version =
+      current_active_apex_file->GetManifest().version();
   // We only decompress the new_apex if it has higher version than data apex.
   return new_apex_version > data_version;
 }
 
 int64_t CalculateSizeForCompressedApex(
     const std::vector<std::tuple<std::string, int64_t, int64_t>>&
-        compressed_apexes,
-    const ApexFileRepository& instance) {
+        compressed_apexes) {
+  const auto& instance = ApexFileRepository::GetInstance();
   int64_t result = 0;
   for (const auto& compressed_apex : compressed_apexes) {
     std::string module_name;
     int64_t version_code;
     int64_t decompressed_size;
     std::tie(module_name, version_code, decompressed_size) = compressed_apex;
-    if (ShouldAllocateSpaceForDecompression(module_name, version_code,
-                                            instance)) {
+    if (ShouldAllocateSpaceForDecompression(module_name, version_code, instance,
+                                            gMountedApexes)) {
       result += decompressed_size;
     }
   }
